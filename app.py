@@ -771,3 +771,45 @@ with tab2:
             plt.tight_layout()
             st.pyplot(fig_dist)
             plt.close()
+
+# ── Engagement Trend distribution across the batch ────────
+st.markdown("---")
+st.markdown("### 📈 Engagement Trend Across Uploaded Students")
+
+valid_trend = results_df[results_df['engagement_trend'].notna()]
+
+if len(valid_trend) > 0:
+    n_improving = (valid_trend['engagement_trend'] >= 0).sum()
+    n_declining = (valid_trend['engagement_trend'] < 0).sum()
+
+    t1, t2 = st.columns(2)
+    t1.metric("Improving Engagement (Trend ≥ 0)", n_improving,
+              delta=f"{n_improving/len(valid_trend):.1%}")
+    t2.metric("Declining Engagement (Trend < 0)", n_declining,
+              delta=f"-{n_declining/len(valid_trend):.1%}")
+
+    fig_trend, ax_trend = plt.subplots(figsize=(10, 4))
+    colors = ['#E63946' if v < 0 else '#2D6A4F' for v in valid_trend['engagement_trend']]
+    ax_trend.hist(
+        valid_trend['engagement_trend'], bins=25,
+        color='#0F3460', alpha=0.7, edgecolor='white'
+    )
+    ax_trend.axvline(x=0, color='#8D99AE', linestyle='--', linewidth=2,
+                      label='No change (Trend = 0)')
+    ax_trend.set_xlabel('Engagement Trend (Week 5 clicks − Week 1 clicks)')
+    ax_trend.set_ylabel('Number of Students')
+    ax_trend.set_title('Distribution of Engagement Trend Across Batch',
+                        fontsize=13, fontweight='bold')
+    ax_trend.legend()
+    ax_trend.grid(True, alpha=0.3)
+    plt.tight_layout()
+    st.pyplot(fig_trend)
+    plt.close()
+
+    st.caption(
+        "Students left of the dashed line (negative trend) showed declining "
+        "engagement from Week 1 to Week 5. Students to the right (positive trend) "
+        "increased their engagement over the same window."
+    )
+else:
+    st.info("No engagement trend data available for this batch.")
