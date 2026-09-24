@@ -70,6 +70,29 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+@st.cache_resource
+def load_background_data():
+    """
+    Loads real (unscaled) training tensors to build a genuine
+    SHAP background distribution — not zeros, not synthetic.
+    """
+    X_train_raw = np.load('data/X_train.npy')          # (n, 5, 30)
+    with open('data/feature_cols.json', 'r') as f:
+        feature_cols = json.load(f)
+
+    n = X_train_raw.shape[0]
+    X_train_flat = X_train_raw.reshape(n, -1)
+    X_train_scaled_flat = scaler.transform(X_train_flat)
+
+    # Dedup to 50 unique features — matches the fix from your notebook
+    X_train_scaled = X_train_scaled_flat.reshape(n, N_WEEKS, N_FEATURES)
+    tv_part   = X_train_scaled[:, :, 0:5].reshape(n, -1)     # (n, 25)
+    stat_part = X_train_scaled[:, 0, 5:30]                    # (n, 25)
+    X_train_dedup = np.concatenate([tv_part, stat_part], axis=1)  # (n, 50)
+
+    return X_train_dedup
+
+X_train_dedup = load_background_data()
 
 # ── Load model and scaler ─────────────────────
 @st.cache_resource
@@ -182,29 +205,55 @@ def predict_student(tensor_scaled):
 
 
 # ── Helper: SHAP waterfall ────────────────────
+dedup_feature_names = None  # will be set below
+
+def get_dedup_names():
+    global dedup_feature_names
+    if dedup_feature_names is None:
+        weekly_named = [f'{f}_w{w}' for f in WEEKLY_FEATURES for w in range(1, N_WEEKS+1)]
+        dedup_feature_names = weekly_named + STATIC_FEATURES + \
+                               [f'region_{r}' for r in REGIONS]
+    return dedup_feature_names
+
+def dedup_tensor(tensor_scaled):
+    """tensor_scaled: (1, 5, 30) -> (1, 50), one copy of each static feature"""
+    tv_part   = tensor_scaled[:, :, 0:5].reshape(1, -1)
+    stat_part = tensor_scaled[:, 0, 5:30]
+    return np.concatenate([tv_part, stat_part], axis=1)
+
+def predict_dedup(X_flat_50):
+    n = X_flat_50.shape[0]
+    tv_part       = X_flat_50[:, :25].reshape(n, N_WEEKS, 5)
+    stat_part     = X_flat_50[:, 25:]
+    stat_expanded = np.repeat(stat_part[:, np.newaxis, :], N_WEEKS, axis=1)
+    X_tensor      = np.concatenate([tv_part, stat_expanded], axis=2)
+    return model.predict(X_tensor, verbose=0).flatten()
+
 def compute_shap_waterfall(tensor_scaled):
-    flat = tensor_scaled.reshape(1, -1)
+    student_dedup = dedup_tensor(tensor_scaled)  # (1, 50)
 
-    def predict_flat(X):
-        X_3d = X.reshape(-1, N_WEEKS, N_FEATURES)
-        return model.predict(X_3d, verbose=0).flatten()
+    # Real background — a random sample of actual training students,
+    # not zeros, not a kmeans summary
+    np.random.seed(42)
+    bg_idx = np.random.choice(X_train_dedup.shape[0], 100, replace=False)
+    background = X_train_dedup[bg_idx]
 
-    # Small background for speed
-    bg = np.zeros((10, N_WEEKS * N_FEATURES))
-    explainer = shap.KernelExplainer(predict_flat, bg)
-    sv = explainer.shap_values(flat, nsamples=50, verbose=False)
+    explainer = shap.KernelExplainer(predict_dedup, background)
+    sv = explainer.shap_values(student_dedup, nsamples=200, verbose=False)
 
     exp = shap.Explanation(
         values=sv[0],
         base_values=explainer.expected_value,
-        data=flat[0],
-        feature_names=FLAT_NAMES
+        data=student_dedup[0],
+        feature_names=get_dedup_names()
     )
 
     fig, ax = plt.subplots(figsize=(10, 8))
     shap.waterfall_plot(exp, max_display=15, show=False)
     plt.tight_layout()
     return fig
+
+
 
 
 # ── Helper: encode categorical inputs ─────────
