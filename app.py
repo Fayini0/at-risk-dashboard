@@ -71,28 +71,40 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_resource
-def load_background_data():
+def load_background_data(n_background=300):
     """
-    Loads real (unscaled) training tensors to build a genuine
-    SHAP background distribution — not zeros, not synthetic.
+    Loads a real, stratified sample of actual training students
+    (not synthetic/averaged points) to use as the SHAP background.
     """
-    X_train_raw = np.load('data/X_train.npy')          # (n, 5, 30)
+    X_train_raw = np.load('data/X_train.npy')            # (n, 5, 30)
+    y_train_raw = np.load('data/y_train.npy')             # (n,) for stratification
+
     with open('data/feature_cols.json', 'r') as f:
         feature_cols = json.load(f)
 
     n = X_train_raw.shape[0]
     X_train_flat = X_train_raw.reshape(n, -1)
     X_train_scaled_flat = scaler.transform(X_train_flat)
-
-    # Dedup to 50 unique features — matches the fix from your notebook
     X_train_scaled = X_train_scaled_flat.reshape(n, N_WEEKS, N_FEATURES)
-    tv_part   = X_train_scaled[:, :, 0:5].reshape(n, -1)     # (n, 25)
-    stat_part = X_train_scaled[:, 0, 5:30]                    # (n, 25)
+
+    # Dedup to 50 unique features (removes the broadcast duplicates)
+    tv_part   = X_train_scaled[:, :, 0:5].reshape(n, -1)      # (n, 25)
+    stat_part = X_train_scaled[:, 0, 5:30]                     # (n, 25)
     X_train_dedup = np.concatenate([tv_part, stat_part], axis=1)  # (n, 50)
 
-    return X_train_dedup
+    # Stratified sample: roughly half safe, half at-risk, real rows only
+    np.random.seed(42)
+    idx_safe    = np.where(y_train_raw == 0)[0]
+    idx_atrisk  = np.where(y_train_raw == 1)[0]
 
-X_train_dedup = load_background_data()
+    n_each = n_background // 2
+    sample_safe   = np.random.choice(idx_safe, min(n_each, len(idx_safe)), replace=False)
+    sample_atrisk = np.random.choice(idx_atrisk, min(n_each, len(idx_atrisk)), replace=False)
+    bg_idx = np.concatenate([sample_safe, sample_atrisk])
+
+    return X_train_dedup[bg_idx]
+
+X_train_dedup_bg = load_background_data(n_background=300)
 
 # ── Load model and scaler ─────────────────────
 @st.cache_resource
@@ -232,28 +244,20 @@ def predict_dedup(X_flat_50):
 def compute_shap_waterfall(tensor_scaled):
     student_dedup = dedup_tensor(tensor_scaled)  # (1, 50)
 
-    # Real background — a random sample of actual training students,
-    # not zeros, not a kmeans summary
-    np.random.seed(42)
-    bg_idx = np.random.choice(X_train_dedup.shape[0], 100, replace=False)
-    background = X_train_dedup[bg_idx]
-
-    explainer = shap.KernelExplainer(predict_dedup, background)
+    explainer = shap.KernelExplainer(predict_dedup, X_train_dedup_bg)
     sv = explainer.shap_values(student_dedup, nsamples=200, verbose=False)
 
     exp = shap.Explanation(
         values=sv[0],
         base_values=explainer.expected_value,
         data=student_dedup[0],
-        feature_names=get_dedup_names()
+        feature_names=DEDUP_NAMES
     )
 
     fig, ax = plt.subplots(figsize=(10, 8))
     shap.waterfall_plot(exp, max_display=15, show=False)
     plt.tight_layout()
     return fig
-
-
 
 
 # ── Helper: encode categorical inputs ─────────
