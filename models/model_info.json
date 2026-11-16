@@ -1,9 +1,0 @@
-{
-  "threshold": 0.46381375193595886,
-  "auc_roc": 0.7380042339623476,
-  "input_shape": [
-    5,
-    31
-  ],
-  "n_unique_features": 51
-}
